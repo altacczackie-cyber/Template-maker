@@ -6,112 +6,195 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const USER_TOKEN = process.env.DISCORD_USER_TOKEN;
-const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID;
+const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID;    // Server da copiare
+const SOURCE_GUILD_ID = process.env.SOURCE_GUILD_ID;    // Server dove copiare
 const OWNER_USERNAME = process.env.OWNER_USERNAME || 'pinkcorset';
 
 const DISCORD_API = 'https://discord.com/api/v10';
-const headers = { 'Authorization': USER_TOKEN, 'Content-Type': 'application/json' };
+const headers = { 
+  'Authorization': USER_TOKEN, 
+  'Content-Type': 'application/json'
+};
 
-async function cloneServer() {
-  console.log('🚀 CLONING SERVER...');
+async function cloneToExistingServer() {
+  console.log('='.repeat(60));
+  console.log('🚀 CLONING TO EXISTING SERVER');
+  console.log(`🎯 From: ${TARGET_GUILD_ID}`);
+  console.log(`🏰 To: ${SOURCE_GUILD_ID}`);
+  console.log('='.repeat(60));
   
   try {
-    // 1. Crea nuovo server
-    console.log('🏗️ Creating new server...');
-    const newGuild = await axios.post(`${DISCORD_API}/guilds`, {
-      name: `Clone of bleed - @${OWNER_USERNAME}`,
-      region: 'europe'
-    }, { headers });
+    // 1. Verifica account
+    const user = await axios.get(`${DISCORD_API}/users/@me`, { headers });
+    console.log(`✅ Account: ${user.data.username}`);
     
-    const newGuildId = newGuild.data.id;
-    console.log(`✅ New server: ${newGuild.data.name}`);
+    // 2. Verifica permessi sul server source
+    console.log('🔐 Checking permissions on source server...');
+    const guildsRes = await axios.get(`${DISCORD_API}/users/@me/guilds`, { headers });
+    const sourceGuild = guildsRes.data.find(g => g.id === SOURCE_GUILD_ID);
     
-    // 2. Prendi dati sorgente
-    console.log('📥 Fetching source data...');
-    const [channels, roles] = await Promise.all([
+    if (!sourceGuild) {
+      throw new Error(`❌ Not in source server ${SOURCE_GUILD_ID}`);
+    }
+    
+    const perms = parseInt(sourceGuild.permissions);
+    const canManage = (perms & 0x20) !== 0; // MANAGE_GUILD
+    const isOwner = sourceGuild.owner;
+    
+    if (!canManage && !isOwner) {
+      throw new Error('❌ Need MANAGE_GUILD permission in source server');
+    }
+    
+    console.log(`✅ Permissions OK (${isOwner ? 'Owner' : 'Manage Guild'})`);
+    
+    // 3. Fetch dati target server
+    console.log('📥 Fetching target server data...');
+    const [channelsRes, rolesRes] = await Promise.all([
       axios.get(`${DISCORD_API}/guilds/${TARGET_GUILD_ID}/channels`, { headers }),
       axios.get(`${DISCORD_API}/guilds/${TARGET_GUILD_ID}/roles`, { headers })
     ]);
     
-    // 3. Crea ruoli
+    const channels = channelsRes.data;
+    const roles = rolesRes.data.filter(r => r.name !== '@everyone');
+    
+    // 4. Crea ruoli nel source server
     console.log('🎭 Creating roles...');
-    for (const role of roles.data.filter(r => r.name !== '@everyone')) {
+    const createdRoles = [];
+    
+    for (const role of roles) {
       try {
-        await axios.post(`${DISCORD_API}/guilds/${newGuildId}/roles`, {
+        const roleData = {
           name: role.name,
           color: role.color,
-          permissions: role.permissions
-        }, { headers });
-        console.log(`   ✅ ${role.name}`);
-      } catch (e) {}
-      await new Promise(r => setTimeout(r, 300));
+          hoist: role.hoist,
+          permissions: role.permissions,
+          mentionable: role.mentionable
+        };
+        
+        const response = await axios.post(
+          `${DISCORD_API}/guilds/${SOURCE_GUILD_ID}/roles`,
+          roleData,
+          { headers }
+        );
+        
+        createdRoles.push({
+          original: role.name,
+          new_id: response.data.id
+        });
+        
+        console.log(`   ✅ Role: ${role.name}`);
+        await new Promise(r => setTimeout(r, 500)); // Rate limit
+        
+      } catch (error) {
+        console.log(`   ⚠️ Skipping role ${role.name}: ${error.response?.status}`);
+      }
     }
     
-    // 4. Crea categorie
-    console.log('📂 Creating categories...');
+    // 5. Crea categorie e canali
+    console.log('📁 Creating categories and channels...');
+    
+    // Prima le categorie
+    const categories = channels.filter(c => c.type === 4);
     const categoryMap = {};
-    const categories = channels.data.filter(c => c.type === 4);
     
-    for (const cat of categories) {
+    for (const category of categories) {
       try {
-        const res = await axios.post(`${DISCORD_API}/guilds/${newGuildId}/channels`, {
-          name: cat.name,
+        const catData = {
+          name: category.name,
           type: 4,
-          position: cat.position
-        }, { headers });
-        categoryMap[cat.id] = res.data.id;
-        console.log(`   ✅ ${cat.name}`);
-      } catch (e) {}
-      await new Promise(r => setTimeout(r, 200));
+          position: category.position
+        };
+        
+        const response = await axios.post(
+          `${DISCORD_API}/guilds/${SOURCE_GUILD_ID}/channels`,
+          catData,
+          { headers }
+        );
+        
+        categoryMap[category.id] = response.data.id;
+        console.log(`   ✅ Category: ${category.name}`);
+        await new Promise(r => setTimeout(r, 400));
+        
+      } catch (error) {
+        console.log(`   ⚠️ Skipping category ${category.name}`);
+      }
     }
     
-    // 5. Crea canali
-    console.log('💬 Creating channels...');
-    const otherChannels = channels.data.filter(c => c.type !== 4);
+    // Poi i canali
+    const otherChannels = channels.filter(c => c.type !== 4);
+    let createdChannels = 0;
     
-    for (const ch of otherChannels) {
+    for (const channel of otherChannels) {
       try {
-        await axios.post(`${DISCORD_API}/guilds/${newGuildId}/channels`, {
-          name: ch.name,
-          type: ch.type,
-          position: ch.position,
-          parent_id: categoryMap[ch.parent_id],
-          topic: ch.topic
-        }, { headers });
-        console.log(`   ✅ ${ch.name}`);
-      } catch (e) {}
-      await new Promise(r => setTimeout(r, 200));
+        const channelData = {
+          name: channel.name,
+          type: channel.type,
+          position: channel.position,
+          parent_id: categoryMap[channel.parent_id] || null,
+          topic: channel.topic || null,
+          nsfw: channel.nsfw || false,
+          bitrate: channel.bitrate || 64000,
+          user_limit: channel.user_limit || 0,
+          rate_limit_per_user: channel.rate_limit_per_user || 0
+        };
+        
+        await axios.post(
+          `${DISCORD_API}/guilds/${SOURCE_GUILD_ID}/channels`,
+          channelData,
+          { headers }
+        );
+        
+        createdChannels++;
+        const typeName = 
+          channel.type === 0 ? 'text' :
+          channel.type === 2 ? 'voice' :
+          channel.type === 5 ? 'announcement' :
+          channel.type === 15 ? 'forum' : `type ${channel.type}`;
+        
+        console.log(`   ✅ ${typeName}: ${channel.name}`);
+        await new Promise(r => setTimeout(r, 400));
+        
+      } catch (error) {
+        console.log(`   ⚠️ Skipping channel ${channel.name}`);
+      }
     }
     
-    // 6. Crea invite
-    console.log('🔗 Creating invite...');
-    const allChannels = await axios.get(`${DISCORD_API}/guilds/${newGuildId}/channels`, { headers });
-    const textChannel = allChannels.data.find(c => c.type === 0);
-    
-    let invite = null;
-    if (textChannel) {
-      try {
-        const inviteRes = await axios.post(`${DISCORD_API}/channels/${textChannel.id}/invites`, {
-          max_age: 86400
-        }, { headers });
-        invite = `https://discord.gg/${inviteRes.data.code}`;
-      } catch (e) {}
-    }
-    
-    // 7. Risultato
-    console.log('\n🎉 CLONE COMPLETE!');
-    console.log('='.repeat(50));
-    console.log(`🏰 New Server: ${newGuild.data.name}`);
-    console.log(`🆔 ID: ${newGuildId}`);
-    if (invite) console.log(`🔗 Invite: ${invite}`);
+    // 6. Risultati
+    console.log('\n' + '='.repeat(60));
+    console.log('🎉 CLONE COMPLETE!');
+    console.log('='.repeat(60));
+    console.log(`📊 Results:`);
+    console.log(`   🎭 Roles created: ${createdRoles.length}/${roles.length}`);
+    console.log(`   📂 Categories: ${Object.keys(categoryMap).length}/${categories.length}`);
+    console.log(`   💬 Channels: ${createdChannels}/${otherChannels.length}`);
+    console.log(`🏰 Source Server ID: ${SOURCE_GUILD_ID}`);
     console.log(`👤 By: @${OWNER_USERNAME}`);
-    console.log('='.repeat(50));
+    console.log('='.repeat(60));
     
-    return { success: true, guildId: newGuildId, invite, createdBy: `@${OWNER_USERNAME}` };
+    return {
+      success: true,
+      source_server_id: SOURCE_GUILD_ID,
+      stats: {
+        roles_created: createdRoles.length,
+        categories_created: Object.keys(categoryMap).length,
+        channels_created: createdChannels
+      },
+      created_by: `@${OWNER_USERNAME}`,
+      note: 'Cloned structure to existing server'
+    };
     
   } catch (error) {
-    console.log('❌ ERROR:', error.response?.data?.message || error.message);
-    return { success: false, error: error.message, createdBy: `@${OWNER_USERNAME}` };
+    console.log('\n' + '='.repeat(60));
+    console.log('❌ CLONE FAILED');
+    console.log('='.repeat(60));
+    console.log(`Error: ${error.message}`);
+    console.log('='.repeat(60));
+    
+    return {
+      success: false,
+      error: error.message,
+      created_by: `@${OWNER_USERNAME}`
+    };
   }
 }
 
@@ -119,23 +202,54 @@ async function cloneServer() {
 app.get('/', (req, res) => {
   res.send(`
     <html>
-    <body>
-      <h1>🚀 Discord Cloner</h1>
-      <p>By @${OWNER_USERNAME}</p>
-      <p>Target: ${TARGET_GUILD_ID}</p>
-      <button onclick="startClone()">START CLONE</button>
-      <div id="result"></div>
+    <body style="font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto;">
+      <h1>🚀 Discord Server Cloner</h1>
+      <p><strong>👤 By:</strong> @${OWNER_USERNAME}</p>
+      <div style="background: #f0f0f0; padding: 15px; border-radius: 5px; margin: 20px 0;">
+        <p><strong>🎯 Target (copy from):</strong> ${TARGET_GUILD_ID || 'Not set'}</p>
+        <p><strong>🏰 Source (copy to):</strong> ${SOURCE_GUILD_ID || 'Not set'}</p>
+      </div>
+      
+      <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
+        <h3>⚠️ Requirements:</h3>
+        <ul>
+          <li>You must have <strong>MANAGE_GUILD</strong> permission in source server</li>
+          <li>You must be a member of both servers</li>
+          <li>Process takes 1-2 minutes</li>
+        </ul>
+      </div>
+      
+      <button onclick="startClone()" style="padding: 12px 24px; background: #5865f2; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
+        🚀 START CLONING
+      </button>
+      
+      <div id="result" style="margin-top: 20px;"></div>
+      
       <script>
         async function startClone() {
+          document.getElementById('result').innerHTML = 
+            '<div style="background: #e7f3ff; padding: 15px; border-radius: 5px;">⏳ Cloning in progress... Check console logs.</div>';
+          
           const res = await fetch('/clone');
           const data = await res.json();
-          document.getElementById('result').innerHTML = 
-            data.success ? 
-              \`<h3>✅ CLONED!</h3>
-               <p>Server ID: \${data.guildId}</p>
-               \${data.invite ? \`<p>Invite: <a href="\${data.invite}">\${data.invite}</a></p>\` : ''}
-               <p>By: \${data.createdBy}</p>\` :
-              \`<h3>❌ FAILED</h3><p>\${data.error}</p>\`;
+          
+          if (data.success) {
+            let html = '<div style="background: #d4edda; padding: 20px; border-radius: 5px;">';
+            html += '<h3 style="color: #155724;">✅ CLONE COMPLETE!</h3>';
+            html += \`<p><strong>Source Server:</strong> \${data.source_server_id}</p>\`;
+            html += \`<p><strong>Roles created:</strong> \${data.stats.roles_created}</p>\`;
+            html += \`<p><strong>Categories:</strong> \${data.stats.categories_created}</p>\`;
+            html += \`<p><strong>Channels:</strong> \${data.stats.channels_created}</p>\`;
+            html += \`<p><strong>By:</strong> \${data.created_by}</p>\`;
+            html += '</div>';
+            document.getElementById('result').innerHTML = html;
+          } else {
+            document.getElementById('result').innerHTML = 
+              \`<div style="background: #f8d7da; padding: 20px; border-radius: 5px;">
+                <h3 style="color: #721c24;">❌ CLONE FAILED</h3>
+                <p>\${data.error}</p>
+              </div>\`;
+          }
         }
       </script>
     </body>
@@ -144,16 +258,19 @@ app.get('/', (req, res) => {
 });
 
 app.get('/clone', async (req, res) => {
-  const result = await cloneServer();
+  const result = await cloneToExistingServer();
   res.json(result);
 });
 
-// Auto-start
+// Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🌐 Server running on port ${PORT}`);
+  console.log(`👤 By: @${OWNER_USERNAME}`);
   
-  if (USER_TOKEN && TARGET_GUILD_ID) {
-    console.log('Auto-cloning in 3 seconds...');
-    setTimeout(cloneServer, 3000);
+  if (USER_TOKEN && TARGET_GUILD_ID && SOURCE_GUILD_ID) {
+    console.log('\n🔄 Auto-cloning in 3 seconds...\n');
+    setTimeout(() => {
+      cloneToExistingServer();
+    }, 3000);
   }
 });

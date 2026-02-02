@@ -1,0 +1,19 @@
+{
+  "name": "discord-server-template-creator",
+  "version": "1.0.0",
+  "description": "Educational Discord Server Template Creator by @pinkcorset",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "express": "^4.18.2",
+    "axios": "^1.6.7",
+    "dotenv": "^16.3.1",
+    "form-data": "^4.0.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}

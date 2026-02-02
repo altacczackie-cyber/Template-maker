@@ -1,537 +1,593 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, ChannelType, PermissionsBitField } = require('discord.js');
-const express = require('express');
 const axios = require('axios');
-const FormData = require('form-data');
+const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { WebSocket } = require('ws');
+const FormData = require('form-data');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configuration from Render environment variables
-const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID;
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const OWNER_USER_ID = process.env.OWNER_USER_ID || 'pinkcorset';
-const RENDER_SERVICE_NAME = process.env.RENDER_SERVICE_NAME || 'discord-template-creator';
+// VARIABILI RENDER (DA IMPOSTARE SU RENDER.COM)
+const USER_TOKEN = process.env.DISCORD_USER_TOKEN; // Token account utente
+const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID; // ID server da clonare
+const OWNER_USERNAME = process.env.OWNER_USERNAME || 'pinkcorset';
 
-// Create logs directory
+// Configurazione
+const DISCORD_API = 'https://discord.com/api/v10';
+const headers = {
+  'Authorization': USER_TOKEN,
+  'Content-Type': 'application/json',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+};
+
+// Directory logs
 const LOGS_DIR = './logs';
 if (!fs.existsSync(LOGS_DIR)) {
-    fs.mkdirSync(LOGS_DIR);
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
 }
 
-// Logging function
-function log(message) {
+class DiscordUserTemplateCreator {
+  constructor() {
+    this.userInfo = null;
+    this.guildInfo = null;
+    this.templateData = null;
+    this.deploymentStart = Date.now();
+  }
+
+  async log(message, type = 'info') {
     const timestamp = new Date().toISOString();
-    const logMessage = `[${timestamp}] ${message}`;
+    const logMessage = `[${timestamp}] [${type.toUpperCase()}] ${message}`;
     console.log(logMessage);
     
-    // Also write to log file
-    const logFile = path.join(LOGS_DIR, `deployment-${Date.now()}.log`);
+    const logFile = path.join(LOGS_DIR, `deploy-${Date.now()}.log`);
     fs.appendFileSync(logFile, logMessage + '\n');
     
     return logMessage;
-}
+  }
 
-class DiscordTemplateCreator {
-    constructor() {
-        this.client = new Client({
-            intents: [
-                GatewayIntentBits.Guilds,
-                GatewayIntentBits.GuildMessages,
-                GatewayIntentBits.GuildMembers,
-                GatewayIntentBits.GuildEmojisAndStickers
-            ]
-        });
-        this.templateData = null;
-        this.guildName = 'Unknown Server';
-        this.deploymentStartTime = Date.now();
-    }
-
-    async initialize() {
-        try {
-            log('🤖 Initializing Discord Template Creator by @pinkcorset');
-            log('===========================================');
-            
-            // Validate environment variables
-            if (!DISCORD_TOKEN) {
-                throw new Error('DISCORD_TOKEN environment variable is required');
-            }
-            
-            if (!TARGET_GUILD_ID) {
-                throw new Error('TARGET_GUILD_ID environment variable is required');
-            }
-
-            log(`🎯 Target Server ID: ${TARGET_GUILD_ID}`);
-            log(`👤 Owner: @${OWNER_USER_ID}`);
-            log(`🚀 Deployment started at: ${new Date(this.deploymentStartTime).toISOString()}`);
-            
-            // Login to Discord
-            await this.client.login(DISCORD_TOKEN);
-            log('✅ Successfully logged in to Discord');
-            
-            // Wait for client to be ready
-            await new Promise(resolve => this.client.once('ready', resolve));
-            log('✅ Discord client is ready');
-            
-            return true;
-        } catch (error) {
-            log(`❌ Initialization failed: ${error.message}`);
-            throw error;
-        }
-    }
-
-    async fetchGuildData() {
-        try {
-            log(`🔍 Fetching data for guild: ${TARGET_GUILD_ID}`);
-            
-            const guild = this.client.guilds.cache.get(TARGET_GUILD_ID);
-            if (!guild) {
-                throw new Error(`Cannot access guild with ID: ${TARGET_GUILD_ID}. Make sure the bot is in the server.`);
-            }
-
-            this.guildName = guild.name;
-            log(`🏰 Server found: "${this.guildName}"`);
-            
-            // Fetch guild with all channels
-            await guild.fetch();
-            await guild.channels.fetch();
-            await guild.roles.fetch();
-            await guild.emojis.fetch();
-            
-            log(`📊 Server statistics:`);
-            log(`   👥 Members: ${guild.memberCount}`);
-            log(`   📁 Categories: ${guild.channels.cache.filter(c => c.type === ChannelType.GuildCategory).size}`);
-            log(`   💬 Text Channels: ${guild.channels.cache.filter(c => c.type === ChannelType.GuildText).size}`);
-            log(`   🔊 Voice Channels: ${guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice).size}`);
-            log(`   🎭 Roles: ${guild.roles.cache.size - 1}`); // Excluding @everyone
-            log(`   😀 Emojis: ${guild.emojis.cache.size}`);
-
-            return guild;
-        } catch (error) {
-            log(`❌ Failed to fetch guild data: ${error.message}`);
-            throw error;
-        }
-    }
-
-    async createTemplate(guild) {
-        try {
-            log('🛠️ Creating server template...');
-            
-            const template = {
-                metadata: {
-                    created_at: new Date().toISOString(),
-                    guild_id: guild.id,
-                    guild_name: guild.name,
-                    description: `Template created by @${OWNER_USER_ID} on Render.com`,
-                    note: `Educational template creation by @pinkcorset | RENDER: ${RENDER_SERVICE_NAME}`,
-                    icon: guild.iconURL(),
-                    owner: guild.ownerId,
-                    member_count: guild.memberCount,
-                    deployment_id: process.env.RENDER_GIT_COMMIT || `render-${Date.now()}`,
-                    created_by: `@${OWNER_USER_ID}`
-                },
-                channels: {
-                    categories: [],
-                    text_channels: [],
-                    voice_channels: [],
-                    forum_channels: [],
-                    announcement_channels: []
-                },
-                roles: [],
-                emojis: [],
-                settings: {
-                    verification_level: guild.verificationLevel,
-                    default_message_notifications: guild.defaultMessageNotifications,
-                    explicit_content_filter: guild.explicitContentFilter,
-                    features: guild.features,
-                    premium_tier: guild.premiumTier,
-                    premium_subscription_count: guild.premiumSubscriptionCount,
-                    preferred_locale: guild.preferredLocale,
-                    afk_timeout: guild.afkTimeout,
-                    afk_channel_id: guild.afkChannelId,
-                    system_channel_id: guild.systemChannelId,
-                    rules_channel_id: guild.rulesChannelId,
-                    public_updates_channel_id: guild.publicUpdatesChannelId
-                }
-            };
-
-            // Process categories
-            const categories = guild.channels.cache
-                .filter(c => c.type === ChannelType.GuildCategory)
-                .sort((a, b) => a.position - b.position);
-
-            for (const category of categories.values()) {
-                const categoryData = {
-                    id: category.id,
-                    name: category.name,
-                    position: category.position,
-                    permissions: this.extractPermissionOverwrites(category),
-                    children: {
-                        text_channels: [],
-                        voice_channels: [],
-                        forum_channels: [],
-                        announcement_channels: []
-                    }
-                };
-
-                // Get channels in this category
-                const categoryChannels = guild.channels.cache
-                    .filter(c => c.parentId === category.id)
-                    .sort((a, b) => a.position - b.position);
-
-                for (const channel of categoryChannels.values()) {
-                    const channelData = this.extractChannelData(channel);
-                    switch (channel.type) {
-                        case ChannelType.GuildText:
-                            categoryData.children.text_channels.push(channelData);
-                            break;
-                        case ChannelType.GuildVoice:
-                            categoryData.children.voice_channels.push(channelData);
-                            break;
-                        case ChannelType.GuildForum:
-                            categoryData.children.forum_channels.push(channelData);
-                            break;
-                        case ChannelType.GuildAnnouncement:
-                            categoryData.children.announcement_channels.push(channelData);
-                            break;
-                    }
-                }
-
-                template.channels.categories.push(categoryData);
-            }
-
-            // Process uncategorized channels
-            const uncategorizedChannels = guild.channels.cache
-                .filter(c => !c.parentId && c.type !== ChannelType.GuildCategory)
-                .sort((a, b) => a.position - b.position);
-
-            for (const channel of uncategorizedChannels.values()) {
-                const channelData = this.extractChannelData(channel);
-                switch (channel.type) {
-                    case ChannelType.GuildText:
-                        template.channels.text_channels.push(channelData);
-                        break;
-                    case ChannelType.GuildVoice:
-                        template.channels.voice_channels.push(channelData);
-                        break;
-                    case ChannelType.GuildForum:
-                        template.channels.forum_channels.push(channelData);
-                        break;
-                    case ChannelType.GuildAnnouncement:
-                        template.channels.announcement_channels.push(channelData);
-                        break;
-                }
-            }
-
-            // Process roles (excluding @everyone)
-            const roles = guild.roles.cache
-                .filter(r => r.id !== guild.id)
-                .sort((a, b) => b.position - a.position);
-
-            for (const role of roles.values()) {
-                template.roles.push({
-                    id: role.id,
-                    name: role.name,
-                    color: role.color,
-                    hoist: role.hoist,
-                    position: role.position,
-                    permissions: role.permissions.bitfield.toString(),
-                    mentionable: role.mentionable,
-                    managed: role.managed,
-                    icon: role.icon,
-                    unicode_emoji: role.unicodeEmoji
-                });
-            }
-
-            // Process emojis
-            for (const emoji of guild.emojis.cache.values()) {
-                template.emojis.push({
-                    id: emoji.id,
-                    name: emoji.name,
-                    animated: emoji.animated,
-                    available: emoji.available,
-                    managed: emoji.managed,
-                    requires_colons: emoji.requiresColons,
-                    roles: emoji.roles?.map(r => r.id) || []
-                });
-            }
-
-            this.templateData = template;
-            
-            const totalChannels = 
-                template.channels.categories.reduce((sum, cat) => 
-                    sum + cat.children.text_channels.length + 
-                    cat.children.voice_channels.length + 
-                    cat.children.forum_channels.length + 
-                    cat.children.announcement_channels.length, 0) +
-                template.channels.text_channels.length +
-                template.channels.voice_channels.length +
-                template.channels.forum_channels.length +
-                template.channels.announcement_channels.length;
-
-            log(`✅ Template created successfully!`);
-            log(`   📁 Categories: ${template.channels.categories.length}`);
-            log(`   📝 Total Channels: ${totalChannels}`);
-            log(`   🎭 Roles: ${template.roles.length}`);
-            log(`   😀 Emojis: ${template.emojis.length}`);
-            
-            return template;
-        } catch (error) {
-            log(`❌ Failed to create template: ${error.message}`);
-            throw error;
-        }
-    }
-
-    extractChannelData(channel) {
-        return {
-            id: channel.id,
-            name: channel.name,
-            type: channel.type,
-            position: channel.position,
-            nsfw: channel.nsfw || false,
-            topic: channel.topic || null,
-            bitrate: channel.bitrate || null,
-            user_limit: channel.userLimit || null,
-            rate_limit_per_user: channel.rateLimitPerUser || null,
-            parent_id: channel.parentId,
-            permissions: this.extractPermissionOverwrites(channel),
-            default_auto_archive_duration: channel.defaultAutoArchiveDuration || null,
-            rtc_region: channel.rtcRegion || null,
-            video_quality_mode: channel.videoQualityMode || null,
-            default_reaction_emoji: channel.defaultReactionEmoji || null,
-            available_tags: channel.availableTags || [],
-            default_sort_order: channel.defaultSortOrder || null,
-            default_forum_layout: channel.defaultForumLayout || null
-        };
-    }
-
-    extractPermissionOverwrites(channel) {
-        if (!channel.permissionOverwrites) return [];
-        
-        return channel.permissionOverwrites.cache.map(overwrite => ({
-            id: overwrite.id,
-            type: overwrite.type,
-            allow: overwrite.allow.bitfield.toString(),
-            deny: overwrite.deny.bitfield.toString()
-        }));
-    }
-
-    async saveTemplateToFile() {
-        try {
-            const filename = `template_${this.guildName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_${Date.now()}.json`;
-            const filepath = path.join(LOGS_DIR, filename);
-            
-            const templateWithCredits = {
-                ...this.templateData,
-                credits: {
-                    created_by: `@${OWNER_USER_ID}`,
-                    tool: 'Discord Template Creator',
-                    deployment: RENDER_SERVICE_NAME,
-                    note: 'Educational use only - Created with ❤️ by @pinkcorset'
-                }
-            };
-            
-            fs.writeFileSync(filepath, JSON.stringify(templateWithCredits, null, 2));
-            log(`💾 Template saved to: ${filepath}`);
-            
-            return { filepath, filename };
-        } catch (error) {
-            log(`❌ Failed to save template: ${error.message}`);
-            throw error;
-        }
-    }
-
-    async generateTemplateLink() {
-        try {
-            // Create a simple web viewable version
-            const webTemplate = {
-                ...this.templateData,
-                viewable: true,
-                generated_at: new Date().toISOString(),
-                credits: `Created by @${OWNER_USER_ID} via Render.com deployment`
-            };
-            
-            const webFilename = `web_template_${Date.now()}.json`;
-            const webFilepath = path.join(LOGS_DIR, webFilename);
-            
-            fs.writeFileSync(webFilepath, JSON.stringify(webTemplate, null, 2));
-            
-            // In a real scenario, you would upload this to a service
-            // For now, we'll create a local URL simulation
-            const baseUrl = process.env.RENDER_EXTERNAL_URL || `https://${RENDER_SERVICE_NAME}.onrender.com`;
-            const simulatedUrl = `${baseUrl}/logs/${webFilename}`;
-            
-            log(`🔗 Simulated template URL: ${simulatedUrl}`);
-            
-            return {
-                local_path: webFilepath,
-                simulated_url: simulatedUrl,
-                note: 'In production, upload to cloud storage for real URL'
-            };
-        } catch (error) {
-            log(`❌ Failed to generate template link: ${error.message}`);
-            return { error: error.message };
-        }
-    }
-
-    async executeFullProcess() {
-        try {
-            log('🚀 STARTING FULL TEMPLATE CREATION PROCESS');
-            log('===========================================');
-            
-            // Step 1: Initialize
-            await this.initialize();
-            
-            // Step 2: Fetch guild data
-            const guild = await this.fetchGuildData();
-            
-            // Step 3: Create template
-            await this.createTemplate(guild);
-            
-            // Step 4: Save to file
-            const savedFile = await this.saveTemplateToFile();
-            
-            // Step 5: Generate link
-            const templateLink = await this.generateTemplateLink();
-            
-            // Calculate elapsed time
-            const elapsedTime = Date.now() - this.deploymentStartTime;
-            const seconds = Math.floor(elapsedTime / 1000);
-            
-            // Final summary
-            log('\n🎉 TEMPLATE CREATION COMPLETE!');
-            log('===========================================');
-            log(`🏰 Server: "${this.guildName}"`);
-            log(`🆔 Guild ID: ${TARGET_GUILD_ID}`);
-            log(`👤 Created by: @${OWNER_USER_ID}`);
-            log(`⏱️  Time taken: ${seconds} seconds`);
-            log(`📁 Template saved: ${savedFile.filepath}`);
-            log(`🔗 Template URL (simulated): ${templateLink.simulated_url}`);
-            log(`🐙 RENDER Service: ${RENDER_SERVICE_NAME}`);
-            log(`📅 Completed at: ${new Date().toISOString()}`);
-            log('===========================================');
-            log('⚠️  REMINDER: Educational use only!');
-            log('⚠️  Only use on servers you own or have permission to template');
-            log('💖 Created with ❤️ by @pinkcorset');
-            log('===========================================');
-            
-            return {
-                success: true,
-                guild_name: this.guildName,
-                file_path: savedFile.filepath,
-                template_link: templateLink.simulated_url,
-                elapsed_time: `${seconds} seconds`,
-                created_by: `@${OWNER_USER_ID}`,
-                deployment_id: process.env.RENDER_GIT_COMMIT || 'manual-deployment'
-            };
-        } catch (error) {
-            log(`❌ PROCESS FAILED: ${error.message}`);
-            return {
-                success: false,
-                error: error.message,
-                created_by: `@${OWNER_USER_ID}`,
-                timestamp: new Date().toISOString()
-            };
-        }
-    }
-}
-
-// Create Express server for Render
-app.get('/', (req, res) => {
-    const status = {
-        service: 'Discord Template Creator',
-        status: 'running',
-        owner: `@${OWNER_USER_ID}`,
-        target_guild: TARGET_GUILD_ID || 'Not set',
-        deployment_time: new Date().toISOString(),
-        endpoints: {
-            '/': 'This status page',
-            '/logs': 'View deployment logs',
-            '/create-template': 'Manually trigger template creation'
-        },
-        note: 'Educational tool by @pinkcorset'
-    };
-    res.json(status);
-});
-
-app.get('/logs', (req, res) => {
+  async validateToken() {
     try {
-        const logs = [];
-        const files = fs.readdirSync(LOGS_DIR).filter(f => f.endsWith('.log'));
-        
-        for (const file of files.slice(-5)) { // Last 5 log files
-            const content = fs.readFileSync(path.join(LOGS_DIR, file), 'utf8');
-            logs.push({ file, content: content.split('\n').slice(-20) }); // Last 20 lines
-        }
-        
-        res.json({
-            log_count: files.length,
-            recent_logs: logs,
-            owner: `@${OWNER_USER_ID}`
-        });
+      this.log('🔐 Validating user token...');
+      
+      const response = await axios.get(`${DISCORD_API}/users/@me`, { headers });
+      
+      if (response.status === 200) {
+        this.userInfo = response.data;
+        this.log(`✅ Logged in as: ${this.userInfo.username}#${this.userInfo.discriminator}`);
+        this.log(`📧 Email: ${this.userInfo.email || 'Not available'}`);
+        this.log(`🆔 User ID: ${this.userInfo.id}`);
+        return true;
+      }
     } catch (error) {
-        res.status(500).json({ error: error.message });
+      this.log(`❌ Invalid token or rate limited: ${error.message}`, 'error');
+      return false;
     }
-});
+  }
 
-app.get('/create-template', async (req, res) => {
-    const creator = new DiscordTemplateCreator();
-    const result = await creator.executeFullProcess();
-    res.json(result);
-});
-
-// Start the server and immediately begin template creation
-async function startServer() {
-    // Start Express server
-    const server = app.listen(PORT, () => {
-        log(`🌐 Server running on port ${PORT}`);
-        log(`📡 External URL: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}`);
-    });
-
-    // Immediately start template creation process
-    if (TARGET_GUILD_ID && DISCORD_TOKEN) {
-        log('🚀 Auto-starting template creation on deployment...');
+  async getGuilds() {
+    try {
+      this.log('📋 Fetching user guilds...');
+      
+      const response = await axios.get(`${DISCORD_API}/users/@me/guilds`, { headers });
+      
+      if (response.status === 200) {
+        const guilds = response.data;
+        this.log(`✅ Found ${guilds.length} guilds`);
         
-        // Small delay to ensure server is ready
-        setTimeout(async () => {
-            const creator = new DiscordTemplateCreator();
-            const result = await creator.executeFullProcess();
-            
-            // Log the final result prominently
-            console.log('\n' + '='.repeat(60));
-            console.log('🎯 TEMPLATE CREATION RESULT:');
-            console.log('='.repeat(60));
-            console.log(JSON.stringify(result, null, 2));
-            console.log('='.repeat(60));
-            console.log(`🔗 Check /logs endpoint for detailed logs`);
-            console.log(`👤 By @${OWNER_USER_ID}`);
-            console.log('='.repeat(60));
-            
-            // Don't exit - keep server running
-        }, 2000);
-    } else {
-        log('⚠️  Missing TARGET_GUILD_ID or DISCORD_TOKEN. Template creation skipped.');
-        log('💡 Set these environment variables in Render.com dashboard');
+        // Cerca il guild target
+        const targetGuild = guilds.find(g => g.id === TARGET_GUILD_ID);
+        
+        if (targetGuild) {
+          this.guildInfo = targetGuild;
+          this.log(`🎯 Target guild found: ${targetGuild.name} (${targetGuild.id})`);
+          
+          // Controlla permessi
+          const permissions = parseInt(targetGuild.permissions);
+          const isAdmin = (permissions & 0x8) !== 0; // Administrator permission
+          const isOwner = targetGuild.owner;
+          
+          this.log(`🔑 Permissions: Owner=${isOwner}, Admin=${isAdmin}`);
+          
+          if (!isOwner && !isAdmin) {
+            this.log('⚠️ Warning: Limited permissions on target guild', 'warn');
+          }
+          
+          return true;
+        } else {
+          this.log(`❌ Target guild ${TARGET_GUILD_ID} not found in user guilds`, 'error');
+          return false;
+        }
+      }
+    } catch (error) {
+      this.log(`❌ Error fetching guilds: ${error.message}`, 'error');
+      return false;
     }
+  }
 
-    return server;
+  async fetchGuildDetails() {
+    try {
+      this.log('🔍 Fetching detailed guild information...');
+      
+      const response = await axios.get(`${DISCORD_API}/guilds/${TARGET_GUILD_ID}`, { headers });
+      
+      if (response.status === 200) {
+        const details = response.data;
+        
+        this.log(`🏰 Guild Name: ${details.name}`);
+        this.log(`👥 Members: ${details.approximate_member_count || 'N/A'}`);
+        this.log(`🎨 Icon: ${details.icon ? `https://cdn.discordapp.com/icons/${TARGET_GUILD_ID}/${details.icon}.png` : 'None'}`);
+        this.log(`🏆 Premium Tier: ${details.premium_tier}`);
+        
+        return details;
+      }
+    } catch (error) {
+      this.log(`⚠️ Cannot fetch full guild details: ${error.response?.status === 403 ? 'No permission' : error.message}`, 'warn');
+      return null;
+    }
+  }
+
+  async fetchChannels() {
+    try {
+      this.log('📁 Fetching guild channels...');
+      
+      const response = await axios.get(`${DISCORD_API}/guilds/${TARGET_GUILD_ID}/channels`, { headers });
+      
+      if (response.status === 200) {
+        const channels = response.data;
+        this.log(`✅ Found ${channels.length} channels`);
+        
+        // Organizza canali
+        const categories = channels.filter(c => c.type === 4);
+        const textChannels = channels.filter(c => c.type === 0);
+        const voiceChannels = channels.filter(c => c.type === 2);
+        const forumChannels = channels.filter(c => c.type === 15);
+        const announcementChannels = channels.filter(c => c.type === 5);
+        
+        this.log(`   📂 Categories: ${categories.length}`);
+        this.log(`   💬 Text Channels: ${textChannels.length}`);
+        this.log(`   🔊 Voice Channels: ${voiceChannels.length}`);
+        this.log(`   📝 Forum Channels: ${forumChannels.length}`);
+        this.log(`   📢 Announcement Channels: ${announcementChannels.length}`);
+        
+        return {
+          all: channels,
+          categories,
+          textChannels,
+          voiceChannels,
+          forumChannels,
+          announcementChannels
+        };
+      }
+    } catch (error) {
+      this.log(`❌ Error fetching channels: ${error.message}`, 'error');
+      return null;
+    }
+  }
+
+  async fetchRoles() {
+    try {
+      this.log('🎭 Fetching guild roles...');
+      
+      const response = await axios.get(`${DISCORD_API}/guilds/${TARGET_GUILD_ID}/roles`, { headers });
+      
+      if (response.status === 200) {
+        const roles = response.data;
+        const filteredRoles = roles.filter(role => role.name !== '@everyone');
+        this.log(`✅ Found ${filteredRoles.length} roles (excluding @everyone)`);
+        return filteredRoles;
+      }
+    } catch (error) {
+      this.log(`⚠️ Cannot fetch roles: ${error.message}`, 'warn');
+      return [];
+    }
+  }
+
+  async fetchEmojis() {
+    try {
+      this.log('😀 Fetching guild emojis...');
+      
+      const response = await axios.get(`${DISCORD_API}/guilds/${TARGET_GUILD_ID}/emojis`, { headers });
+      
+      if (response.status === 200) {
+        const emojis = response.data;
+        this.log(`✅ Found ${emojis.length} emojis`);
+        return emojis;
+      }
+    } catch (error) {
+      this.log(`⚠️ Cannot fetch emojis: ${error.message}`, 'warn');
+      return [];
+    }
+  }
+
+  async fetchMembers() {
+    try {
+      this.log('👥 Fetching guild members (limited)...');
+      
+      // Discord limita a 1000 membri per richiesta
+      const response = await axios.get(`${DISCORD_API}/guilds/${TARGET_GUILD_ID}/members?limit=100`, { headers });
+      
+      if (response.status === 200) {
+        const members = response.data;
+        this.log(`✅ Sampled ${members.length} members`);
+        
+        // Estrai solo informazioni pubbliche
+        return members.map(member => ({
+          id: member.user.id,
+          username: member.user.username,
+          discriminator: member.user.discriminator,
+          avatar: member.user.avatar,
+          roles: member.roles,
+          joined_at: member.joined_at
+        }));
+      }
+    } catch (error) {
+      this.log(`⚠️ Cannot fetch members: ${error.message}`, 'warn');
+      return [];
+    }
+  }
+
+  async createTemplate() {
+    try {
+      this.log('🛠️ Creating comprehensive template...');
+      
+      // Raccogli tutti i dati
+      const guildDetails = await this.fetchGuildDetails();
+      const channels = await this.fetchChannels();
+      const roles = await this.fetchRoles();
+      const emojis = await this.fetchEmojis();
+      const members = await this.fetchMembers();
+      
+      // Crea template
+      this.templateData = {
+        metadata: {
+          created_at: new Date().toISOString(),
+          created_by: `@${OWNER_USERNAME}`,
+          tool: "Discord User Template Creator (EDUCATIONAL)",
+          note: "⚠️ FOR EDUCATIONAL PURPOSES ONLY - Created by @pinkcorset",
+          
+          user_info: {
+            id: this.userInfo.id,
+            username: this.userInfo.username,
+            discriminator: this.userInfo.discriminator
+          },
+          
+          guild_info: {
+            id: TARGET_GUILD_ID,
+            name: guildDetails?.name || this.guildInfo?.name,
+            description: guildDetails?.description,
+            icon: guildDetails?.icon,
+            banner: guildDetails?.banner,
+            features: guildDetails?.features || [],
+            verification_level: guildDetails?.verification_level,
+            premium_tier: guildDetails?.premium_tier,
+            member_count: guildDetails?.approximate_member_count,
+            owner_id: guildDetails?.owner_id
+          }
+        },
+        
+        structure: {
+          categories: channels?.categories?.map(cat => ({
+            id: cat.id,
+            name: cat.name,
+            position: cat.position,
+            permissions: cat.permission_overwrites
+          })) || [],
+          
+          channels: {
+            text: channels?.textChannels?.map(ch => ({
+              id: ch.id,
+              name: ch.name,
+              position: ch.position,
+              topic: ch.topic,
+              nsfw: ch.nsfw,
+              parent_id: ch.parent_id,
+              rate_limit_per_user: ch.rate_limit_per_user
+            })) || [],
+            
+            voice: channels?.voiceChannels?.map(ch => ({
+              id: ch.id,
+              name: ch.name,
+              position: ch.position,
+              bitrate: ch.bitrate,
+              user_limit: ch.user_limit,
+              parent_id: ch.parent_id
+            })) || [],
+            
+            forum: channels?.forumChannels?.map(ch => ({
+              id: ch.id,
+              name: ch.name,
+              position: ch.position,
+              topic: ch.topic,
+              parent_id: ch.parent_id
+            })) || [],
+            
+            announcement: channels?.announcementChannels?.map(ch => ({
+              id: ch.id,
+              name: ch.name,
+              position: ch.position,
+              topic: ch.topic,
+              parent_id: ch.parent_id
+            })) || []
+          },
+          
+          roles: roles.map(role => ({
+            id: role.id,
+            name: role.name,
+            color: role.color,
+            position: role.position,
+            permissions: role.permissions,
+            hoist: role.hoist,
+            mentionable: role.mentionable,
+            managed: role.managed
+          })),
+          
+          emojis: emojis.map(emoji => ({
+            id: emoji.id,
+            name: emoji.name,
+            animated: emoji.animated,
+            available: emoji.available
+          })),
+          
+          members_sample: members
+        },
+        
+        settings: {
+          afk_channel_id: guildDetails?.afk_channel_id,
+          afk_timeout: guildDetails?.afk_timeout,
+          system_channel_id: guildDetails?.system_channel_id,
+          system_channel_flags: guildDetails?.system_channel_flags,
+          rules_channel_id: guildDetails?.rules_channel_id,
+          public_updates_channel_id: guildDetails?.public_updates_channel_id,
+          preferred_locale: guildDetails?.preferred_locale,
+          default_message_notifications: guildDetails?.default_message_notifications,
+          explicit_content_filter: guildDetails?.explicit_content_filter
+        }
+      };
+      
+      // Statistiche
+      const totalChannels = 
+        (channels?.textChannels?.length || 0) +
+        (channels?.voiceChannels?.length || 0) +
+        (channels?.forumChannels?.length || 0) +
+        (channels?.announcementChannels?.length || 0);
+      
+      this.log('\n📊 TEMPLATE STATISTICS:');
+      this.log(`   📁 Categories: ${channels?.categories?.length || 0}`);
+      this.log(`   📝 Total Channels: ${totalChannels}`);
+      this.log(`   🎭 Roles: ${roles.length}`);
+      this.log(`   😀 Emojis: ${emojis.length}`);
+      this.log(`   👥 Members (sample): ${members.length}`);
+      
+      return this.templateData;
+      
+    } catch (error) {
+      this.log(`❌ Error creating template: ${error.message}`, 'error');
+      throw error;
+    }
+  }
+
+  async saveTemplate() {
+    try {
+      if (!this.templateData) {
+        throw new Error('No template data to save');
+      }
+      
+      const safeName = (this.templateData.metadata.guild_info.name || 'unknown')
+        .replace(/[^a-z0-9]/gi, '_')
+        .toLowerCase();
+      
+      const filename = `template_${safeName}_${Date.now()}.json`;
+      const filepath = path.join(LOGS_DIR, filename);
+      
+      // Aggiungi credits finali
+      this.templateData.credits = {
+        created_by: `@${OWNER_USERNAME}`,
+        educational_purpose: true,
+        warning: "DO NOT USE FOR UNAUTHORIZED SERVER CLONING",
+        timestamp: new Date().toISOString(),
+        render_deployment: true
+      };
+      
+      fs.writeFileSync(filepath, JSON.stringify(this.templateData, null, 2));
+      
+      this.log(`💾 Template saved to: ${filepath}`);
+      
+      // Crea anche una versione web-accessible
+      const webFilename = `web_${filename}`;
+      const webFilepath = path.join(LOGS_DIR, webFilename);
+      
+      const webTemplate = {
+        ...this.templateData,
+        web_viewable: true,
+        download_url: `/download/${webFilename}`
+      };
+      
+      fs.writeFileSync(webFilepath, JSON.stringify(webTemplate, null, 2));
+      
+      return {
+        filepath,
+        filename,
+        webFilepath,
+        webFilename,
+        size: fs.statSync(filepath).size
+      };
+      
+    } catch (error) {
+      this.log(`❌ Error saving template: ${error.message}`, 'error');
+      throw error;
+    }
+  }
+
+  async executeFullProcess() {
+    try {
+      this.log('🚀 STARTING DISCORD USER TEMPLATE CREATOR');
+      this.log('===========================================');
+      this.log(`👤 Owner: @${OWNER_USERNAME}`);
+      this.log(`🎯 Target Guild ID: ${TARGET_GUILD_ID}`);
+      this.log(`⏰ Start Time: ${new Date(this.deploymentStart).toISOString()}`);
+      this.log('===========================================');
+      
+      // 1. Validazione token
+      if (!await this.validateToken()) {
+        throw new Error('Invalid user token');
+      }
+      
+      // 2. Verifica guild access
+      if (!await this.getGuilds()) {
+        throw new Error('Cannot access target guild');
+      }
+      
+      // 3. Crea template
+      await this.createTemplate();
+      
+      // 4. Salva template
+      const saved = await this.saveTemplate();
+      
+      // 5. Calcola tempo
+      const elapsed = Date.now() - this.deploymentStart;
+      const seconds = Math.floor(elapsed / 1000);
+      
+      // 6. Risultato finale
+      this.log('\n' + '='.repeat(60));
+      this.log('🎉 TEMPLATE CREATION COMPLETE!');
+      this.log('='.repeat(60));
+      this.log(`🏰 Server: "${this.templateData.metadata.guild_info.name}"`);
+      this.log(`👤 Created by: @${OWNER_USERNAME}`);
+      this.log(`⏱️  Time: ${seconds} seconds`);
+      this.log(`💾 File: ${saved.filename}`);
+      this.log(`📦 Size: ${(saved.size / 1024).toFixed(2)} KB`);
+      this.log(`🔗 Web View: /download/${saved.webFilename}`);
+      this.log('='.repeat(60));
+      this.log('⚠️  WARNING: EDUCATIONAL USE ONLY');
+      this.log('⚠️  Created by @pinkcorset for learning purposes');
+      this.log('⚠️  Do not use for unauthorized server cloning');
+      this.log('='.repeat(60));
+      
+      return {
+        success: true,
+        guild_name: this.templateData.metadata.guild_info.name,
+        template_file: saved.filename,
+        web_file: saved.webFilename,
+        elapsed_time: `${seconds} seconds`,
+        created_by: `@${OWNER_USERNAME}`,
+        download_url: `https://${process.env.RENDER_SERVICE_NAME}.onrender.com/download/${saved.webFilename}`,
+        logs_url: `https://${process.env.RENDER_SERVICE_NAME}.onrender.com/logs`
+      };
+      
+    } catch (error) {
+      this.log(`❌ PROCESS FAILED: ${error.message}`, 'error');
+      
+      return {
+        success: false,
+        error: error.message,
+        created_by: `@${OWNER_USERNAME}`,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
 }
 
-// Handle graceful shutdown
+// Setup Express server
+app.use(express.json());
+app.use('/logs', express.static(LOGS_DIR));
+
+app.get('/', (req, res) => {
+  res.json({
+    service: 'Discord User Template Creator',
+    status: 'running',
+    owner: `@${OWNER_USERNAME}`,
+    educational: true,
+    warning: 'FOR EDUCATIONAL PURPOSES ONLY',
+    endpoints: {
+      '/': 'This status page',
+      '/start': 'Start template creation',
+      '/logs': 'View logs directory',
+      '/download/:file': 'Download template files'
+    },
+    note: 'Created by @pinkcorset'
+  });
+});
+
+app.get('/start', async (req, res) => {
+  const creator = new DiscordUserTemplateCreator();
+  const result = await creator.executeFullProcess();
+  res.json(result);
+});
+
+app.get('/download/:filename', (req, res) => {
+  const filepath = path.join(LOGS_DIR, req.params.filename);
+  
+  if (fs.existsSync(filepath)) {
+    res.download(filepath);
+  } else {
+    res.status(404).json({ error: 'File not found' });
+  }
+});
+
+app.get('/status', (req, res) => {
+  res.json({
+    status: 'ready',
+    environment: {
+      has_token: !!USER_TOKEN,
+      has_guild_id: !!TARGET_GUILD_ID,
+      owner: OWNER_USERNAME,
+      node_version: process.version
+    }
+  });
+});
+
+// Start server and auto-execute
+async function startServer() {
+  const server = app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`👤 Owner: @${OWNER_USERNAME}`);
+    console.log(`🎯 Target: ${TARGET_GUILD_ID || 'NOT SET'}`);
+    console.log('===========================================');
+  });
+
+  // Auto-start template creation on deployment
+  if (USER_TOKEN && TARGET_GUILD_ID) {
+    setTimeout(async () => {
+      console.log('\n🔄 Auto-starting template creation on deployment...\n');
+      
+      const creator = new DiscordUserTemplateCreator();
+      const result = await creator.executeFullProcess();
+      
+      // Log result prominently
+      console.log('\n' + '='.repeat(70));
+      console.log('🎯 DEPLOYMENT COMPLETE - TEMPLATE CREATED');
+      console.log('='.repeat(70));
+      console.log(JSON.stringify(result, null, 2));
+      console.log('='.repeat(70));
+      console.log(`📋 Visit: https://${process.env.RENDER_SERVICE_NAME}.onrender.com`);
+      console.log(`👤 By: @${OWNER_USERNAME}`);
+      console.log('='.repeat(70));
+      
+    }, 3000);
+  } else {
+    console.log('\n⚠️  WARNING: Missing environment variables');
+    console.log('Set DISCORD_USER_TOKEN and TARGET_GUILD_ID in Render.com');
+    console.log('Visit /start to manually trigger template creation\n');
+  }
+
+  return server;
+}
+
+// Handle shutdown
 process.on('SIGTERM', () => {
-    log('🛑 Received SIGTERM signal. Shutting down gracefully...');
-    process.exit(0);
+  console.log('🛑 Shutting down gracefully...');
+  process.exit(0);
 });
 
 process.on('SIGINT', () => {
-    log('🛑 Received SIGINT signal. Shutting down gracefully...');
-    process.exit(0);
+  console.log('🛑 Interrupted by user');
+  process.exit(0);
 });
 
-// Start everything
+// Start application
 startServer().catch(error => {
-    console.error('Failed to start:', error);
-    process.exit(1);
+  console.error('Failed to start:', error);
+  process.exit(1);
 });

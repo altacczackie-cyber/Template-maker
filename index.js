@@ -5,383 +5,477 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// VARIABILI RENDER (USA IL TUO ACCOUNT)
-const USER_TOKEN = process.env.DISCORD_USER_TOKEN; // Token del TUO account
-const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID; // ID server da template
+// VARIABILI RENDER
+const USER_TOKEN = process.env.DISCORD_USER_TOKEN;
+const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID;
 const OWNER_USERNAME = process.env.OWNER_USERNAME || 'pinkcorset';
 
-// Config Discord API
+// Configurazione
 const DISCORD_API = 'https://discord.com/api/v10';
 const headers = {
   'Authorization': USER_TOKEN,
   'Content-Type': 'application/json'
 };
 
-async function createDiscordTemplate() {
-  console.log('='.repeat(60));
-  console.log('🚀 DISCORD TEMPLATE CREATOR');
-  console.log(`👤 Using USER ACCOUNT`);
-  console.log(`🎯 Target Server: ${TARGET_GUILD_ID}`);
-  console.log('='.repeat(60));
-  
-  try {
-    // 1. Verifica che il token sia valido
-    console.log('🔐 Verifying user token...');
-    const userResponse = await axios.get(`${DISCORD_API}/users/@me`, { headers });
-    console.log(`✅ Logged in as: ${userResponse.data.username}`);
-    
-    // 2. Verifica di essere nel server
-    console.log('📋 Checking server access...');
-    const guildsResponse = await axios.get(`${DISCORD_API}/users/@me/guilds`, { headers });
-    const targetGuild = guildsResponse.data.find(g => g.id === TARGET_GUILD_ID);
-    
-    if (!targetGuild) {
-      throw new Error(`❌ You are not in the server ${TARGET_GUILD_ID}`);
-    }
-    
-    console.log(`✅ Server found: "${targetGuild.name}"`);
-    
-    // 3. Controlla permessi (MANAGE_GUILD = 0x20)
-    const permissions = parseInt(targetGuild.permissions);
-    const hasManageGuild = (permissions & 0x20) !== 0;
-    const isOwner = targetGuild.owner;
-    
-    if (!hasManageGuild && !isOwner) {
-      console.log('⚠️ Warning: You need MANAGE_GUILD permission or be server owner');
-      console.log('💡 Ask the server owner for permission or use a server you own');
-    }
-    
-    // 4. Crea il template
-    console.log('🛠️ Creating Discord template...');
-    
-    const templateData = {
-      name: `${targetGuild.name} - Template by @${OWNER_USERNAME}`,
-      description: `Server template created by @${OWNER_USERNAME} on ${new Date().toLocaleDateString()}`
+class DiscordServerCloner {
+  constructor() {
+    this.sourceGuildId = TARGET_GUILD_ID;
+    this.newGuildId = null;
+    this.newGuildInvite = null;
+    this.clonedData = {
+      categories: [],
+      channels: [],
+      roles: []
     };
-    
-    console.log(`📝 Template name: "${templateData.name}"`);
-    
-    const templateResponse = await axios.post(
-      `${DISCORD_API}/guilds/${TARGET_GUILD_ID}/templates`,
-      templateData,
-      { headers }
-    );
-    
-    const template = templateResponse.data;
-    const templateUrl = `https://discord.new/${template.code}`;
-    
-    // 5. Mostra risultati
-    console.log('\n' + '='.repeat(60));
-    console.log('🎉 TEMPLATE CREATED SUCCESSFULLY!');
-    console.log('='.repeat(60));
-    console.log(`🔗 TEMPLATE URL: ${templateUrl}`);
-    console.log(`🏰 Server: ${targetGuild.name}`);
-    console.log(`👤 Created by: @${OWNER_USERNAME}`);
-    console.log(`📅 Created: ${new Date().toLocaleString()}`);
-    console.log(`🔑 Code: ${template.code}`);
-    console.log('='.repeat(60));
-    console.log('💡 Share this link to let others use your template!');
-    console.log('='.repeat(60));
-    
-    return {
-      success: true,
-      template_url: templateUrl,
-      template_code: template.code,
-      server_name: targetGuild.name,
-      created_by: `@${OWNER_USERNAME}`,
-      permissions: {
-        has_manage_guild: hasManageGuild,
-        is_owner: isOwner
-      }
-    };
-    
-  } catch (error) {
-    console.log('\n' + '='.repeat(60));
-    console.log('❌ TEMPLATE CREATION FAILED');
-    console.log('='.repeat(60));
-    
-    if (error.response) {
-      const status = error.response.status;
-      const data = error.response.data;
+  }
+
+  async log(message) {
+    const timestamp = new Date().toISOString();
+    const logMessage = `[${timestamp}] ${message}`;
+    console.log(logMessage);
+    return logMessage;
+  }
+
+  async createNewGuild() {
+    try {
+      await this.log('🏗️ Creating new guild...');
       
-      switch(status) {
-        case 400:
-          console.log('❌ Bad request - Invalid data');
-          break;
-        case 403:
-          console.log('❌ Forbidden - Missing MANAGE_GUILD permission');
-          console.log('💡 You need "Manage Server" permission in the target server');
-          console.log('💡 Or use a server where you are the owner');
-          break;
-        case 404:
-          console.log('❌ Server not found');
-          break;
-        case 429:
-          console.log('❌ Rate limited - Try again later');
-          break;
-        default:
-          console.log(`❌ Discord API Error ${status}:`, data.message || 'Unknown error');
-      }
-    } else {
-      console.log(`❌ Error: ${error.message}`);
+      const guildData = {
+        name: `Clone of bleed - by @${OWNER_USERNAME}`,
+        region: 'europe',
+        icon: null,
+        channels: [],
+        system_channel_id: null,
+        guild_template_code: null
+      };
+      
+      const response = await axios.post(`${DISCORD_API}/guilds`, guildData, { headers });
+      
+      this.newGuildId = response.data.id;
+      await this.log(`✅ New guild created: ${response.data.name} (${this.newGuildId})`);
+      
+      return response.data;
+      
+    } catch (error) {
+      await this.log(`❌ Cannot create guild: ${error.response?.data?.message || error.message}`);
+      throw new Error('Cannot create new guild. You may have reached the server limit.');
     }
-    
-    console.log('='.repeat(60));
-    
-    return {
-      success: false,
-      error: error.response?.data?.message || error.message,
-      created_by: `@${OWNER_USERNAME}`
-    };
+  }
+
+  async fetchSourceStructure() {
+    try {
+      await this.log('🔍 Fetching source server structure...');
+      
+      // Fetch everything
+      const [channelsRes, rolesRes, emojisRes] = await Promise.all([
+        axios.get(`${DISCORD_API}/guilds/${this.sourceGuildId}/channels`, { headers }),
+        axios.get(`${DISCORD_API}/guilds/${this.sourceGuildId}/roles`, { headers }),
+        axios.get(`${DISCORD_API}/guilds/${this.sourceGuildId}/emojis`, { headers })
+      ]);
+      
+      // Organize channels by categories
+      const allChannels = channelsRes.data;
+      const categories = allChannels.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
+      const otherChannels = allChannels.filter(c => c.type !== 4).sort((a, b) => a.position - b.position);
+      
+      this.clonedData = {
+        categories,
+        channels: otherChannels,
+        roles: rolesRes.data.filter(r => r.name !== '@everyone'),
+        emojis: emojisRes.data
+      };
+      
+      await this.log(`📊 Source stats: ${categories.length} categories, ${otherChannels.length} channels, ${this.clonedData.roles.length} roles`);
+      
+      return this.clonedData;
+      
+    } catch (error) {
+      await this.log(`❌ Error fetching source: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async createRoles() {
+    try {
+      await this.log('🎭 Creating roles...');
+      
+      const createdRoles = [];
+      
+      for (const role of this.clonedData.roles) {
+        try {
+          const roleData = {
+            name: role.name,
+            color: role.color,
+            hoist: role.hoist,
+            position: role.position,
+            permissions: role.permissions,
+            mentionable: role.mentionable
+          };
+          
+          const response = await axios.post(
+            `${DISCORD_API}/guilds/${this.newGuildId}/roles`,
+            roleData,
+            { headers }
+          );
+          
+          createdRoles.push({
+            old_id: role.id,
+            new_id: response.data.id,
+            name: role.name
+          });
+          
+          await this.log(`   ✅ Role: ${role.name} (${role.color})`);
+          
+          // Rate limiting
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+        } catch (error) {
+          await this.log(`   ⚠️ Failed role ${role.name}: ${error.response?.status || error.message}`);
+        }
+      }
+      
+      await this.log(`✅ Created ${createdRoles.length} roles`);
+      return createdRoles;
+      
+    } catch (error) {
+      await this.log(`❌ Error creating roles: ${error.message}`);
+      return [];
+    }
+  }
+
+  async createCategories() {
+    try {
+      await this.log('📂 Creating categories...');
+      
+      const categoryMap = {};
+      
+      for (const category of this.clonedData.categories) {
+        try {
+          const categoryData = {
+            name: category.name,
+            type: 4,
+            position: category.position,
+            permission_overwrites: category.permission_overwrites || []
+          };
+          
+          const response = await axios.post(
+            `${DISCORD_API}/guilds/${this.newGuildId}/channels`,
+            categoryData,
+            { headers }
+          );
+          
+          categoryMap[category.id] = response.data.id;
+          
+          await this.log(`   ✅ Category: ${category.name}`);
+          
+          // Rate limiting
+          await new Promise(resolve => setTimeout(resolve, 300));
+          
+        } catch (error) {
+          await this.log(`   ⚠️ Failed category ${category.name}: ${error.response?.status || error.message}`);
+        }
+      }
+      
+      await this.log(`✅ Created ${Object.keys(categoryMap).length} categories`);
+      return categoryMap;
+      
+    } catch (error) {
+      await this.log(`❌ Error creating categories: ${error.message}`);
+      return {};
+    }
+  }
+
+  async createChannels(categoryMap) {
+    try {
+      await this.log('💬 Creating channels...');
+      
+      let created = 0;
+      const channelTypes = {
+        0: 'text',
+        2: 'voice',
+        5: 'announcement',
+        15: 'forum'
+      };
+      
+      for (const channel of this.clonedData.channels) {
+        try {
+          const channelData = {
+            name: channel.name,
+            type: channel.type,
+            position: channel.position,
+            topic: channel.topic,
+            nsfw: channel.nsfw || false,
+            bitrate: channel.bitrate,
+            user_limit: channel.user_limit,
+            rate_limit_per_user: channel.rate_limit_per_user,
+            parent_id: categoryMap[channel.parent_id] || null,
+            permission_overwrites: channel.permission_overwrites || []
+          };
+          
+          await axios.post(
+            `${DISCORD_API}/guilds/${this.newGuildId}/channels`,
+            channelData,
+            { headers }
+          );
+          
+          created++;
+          const typeName = channelTypes[channel.type] || `type ${channel.type}`;
+          await this.log(`   ✅ ${typeName}: ${channel.name}`);
+          
+          // Rate limiting importante
+          await new Promise(resolve => setTimeout(resolve, 400));
+          
+        } catch (error) {
+          await this.log(`   ⚠️ Failed channel ${channel.name}: ${error.response?.status || error.message}`);
+        }
+      }
+      
+      await this.log(`✅ Created ${created} channels`);
+      return created;
+      
+    } catch (error) {
+      await this.log(`❌ Error creating channels: ${error.message}`);
+      return 0;
+    }
+  }
+
+  async createInvite() {
+    try {
+      await this.log('🔗 Creating invite link...');
+      
+      // Trova il primo canale di testo
+      const channelsRes = await axios.get(`${DISCORD_API}/guilds/${this.newGuildId}/channels`, { headers });
+      const textChannel = channelsRes.data.find(c => c.type === 0);
+      
+      if (textChannel) {
+        const inviteData = {
+          max_age: 86400, // 24 ore
+          max_uses: 0, // Illimitato
+          temporary: false,
+          unique: true
+        };
+        
+        const response = await axios.post(
+          `${DISCORD_API}/channels/${textChannel.id}/invites`,
+          inviteData,
+          { headers }
+        );
+        
+        this.newGuildInvite = `https://discord.gg/${response.data.code}`;
+        await this.log(`✅ Invite created: ${this.newGuildInvite}`);
+        
+        return this.newGuildInvite;
+      }
+      
+      return null;
+      
+    } catch (error) {
+      await this.log(`⚠️ Cannot create invite: ${error.message}`);
+      return null;
+    }
+  }
+
+  async executeFullClone() {
+    try {
+      await this.log('='.repeat(60));
+      await this.log('🚀 STARTING FULL SERVER CLONE');
+      await this.log(`👤 By: @${OWNER_USERNAME}`);
+      await this.log(`🎯 Source: ${this.sourceGuildId}`);
+      await this.log('='.repeat(60));
+      
+      // 1. Crea nuovo server
+      await this.createNewGuild();
+      
+      // 2. Prendi struttura originale
+      await this.fetchSourceStructure();
+      
+      // 3. Crea ruoli
+      await this.createRoles();
+      
+      // 4. Crea categorie
+      const categoryMap = await this.createCategories();
+      
+      // 5. Crea canali
+      await this.createChannels(categoryMap);
+      
+      // 6. Crea invite
+      const invite = await this.createInvite();
+      
+      // 7. Risultati finali
+      await this.log('\n' + '='.repeat(60));
+      await this.log('🎉 SERVER CLONED SUCCESSFULLY!');
+      await this.log('='.repeat(60));
+      await this.log(`🏰 New Server: Clone of bleed`);
+      await this.log(`🆔 Guild ID: ${this.newGuildId}`);
+      
+      if (invite) {
+        await this.log(`🔗 INVITE LINK: ${invite}`);
+      }
+      
+      await this.log(`📊 Cloned:`);
+      await this.log(`   📂 Categories: ${this.clonedData.categories.length}`);
+      await this.log(`   💬 Channels: ${this.clonedData.channels.length}`);
+      await this.log(`   🎭 Roles: ${this.clonedData.roles.length}`);
+      await this.log(`   😀 Emojis: ${this.clonedData.emojis.length}`);
+      
+      await this.log('='.repeat(60));
+      await this.log(`👤 Created by: @${OWNER_USERNAME}`);
+      await this.log('='.repeat(60));
+      
+      return {
+        success: true,
+        new_guild_id: this.newGuildId,
+        invite_link: invite,
+        cloned_data: {
+          categories: this.clonedData.categories.length,
+          channels: this.clonedData.channels.length,
+          roles: this.clonedData.roles.length,
+          emojis: this.clonedData.emojis.length
+        },
+        created_by: `@${OWNER_USERNAME}`,
+        note: 'Full server cloned automatically'
+      };
+      
+    } catch (error) {
+      await this.log('\n' + '='.repeat(60));
+      await this.log('❌ CLONE FAILED');
+      await this.log('='.repeat(60));
+      await this.log(`Error: ${error.message}`);
+      await this.log('='.repeat(60));
+      
+      return {
+        success: false,
+        error: error.message,
+        created_by: `@${OWNER_USERNAME}`,
+        note: 'Check if you have permission to create guilds'
+      };
+    }
   }
 }
 
-// Express server semplice
+// Express server
+app.use(express.json());
+
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Discord Template Creator - @pinkcorset</title>
+      <title>Discord Server Cloner - @pinkcorset</title>
       <style>
         body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-        .success { color: green; }
-        .error { color: red; }
-        .template-url { font-size: 18px; background: #f0f0f0; padding: 10px; border-radius: 5px; }
+        .btn { background: #5865f2; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+        .btn:hover { background: #4752c4; }
+        .warning { background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; }
       </style>
     </head>
     <body>
-      <h1>🎯 Discord Template Creator</h1>
-      <p><strong>👤 Using:</strong> USER ACCOUNT</p>
-      <p><strong>🎯 Target Server ID:</strong> ${TARGET_GUILD_ID || 'Not set'}</p>
-      <p><strong>👑 Created by:</strong> @${OWNER_USERNAME}</p>
+      <h1>🚀 Discord Server Cloner</h1>
+      <p><strong>👤 By:</strong> @${OWNER_USERNAME}</p>
+      <p><strong>🎯 Source Server:</strong> ${TARGET_GUILD_ID}</p>
+      
+      <div class="warning">
+        <h3>⚠️ WARNING:</h3>
+        <p>This will create a <strong>NEW REAL SERVER</strong> on your Discord account!</p>
+        <p>You must have available server slots (max 200 for nitro).</p>
+      </div>
+      
+      <h3>🚀 Start Clone:</h3>
+      <button class="btn" onclick="startClone()">START FULL CLONE</button>
+      
+      <div id="result" style="margin-top: 20px; display: none;">
+        <h3>⏳ Cloning in progress...</h3>
+        <p>Check Render logs for details. This may take 1-2 minutes.</p>
+      </div>
+      
       <hr>
-      <p><a href="/create-template">🚀 Click here to create template</a></p>
-      <p><a href="/check-permissions">🔐 Check permissions first</a></p>
-      <hr>
-      <h3>ℹ️ How to use:</h3>
-      <ol>
-        <li>Make sure you have "Manage Server" permission in the target server</li>
-        <li>Click "Create Template"</li>
-        <li>Get your discord.new link</li>
-        <li>Share it to let others clone your server!</li>
-      </ol>
+      <h3>📋 What will be cloned:</h3>
+      <ul>
+        <li>✅ All categories</li>
+        <li>✅ All text/voice/forum channels</li>
+        <li>✅ All roles (with colors and permissions)</li>
+        <li>✅ Channel permissions</li>
+        <li>✅ Channel positions and order</li>
+      </ul>
+      
+      <script>
+        function startClone() {
+          document.getElementById('result').style.display = 'block';
+          fetch('/clone')
+            .then(res => res.json())
+            .then(data => {
+              document.getElementById('result').innerHTML = 
+                data.success ? 
+                  \`<h3 style="color: green;">✅ CLONE COMPLETE!</h3>
+                   <p><strong>New Server ID:</strong> \${data.new_guild_id}</p>
+                   \${data.invite_link ? \`<p><strong>Invite:</strong> <a href="\${data.invite_link}" target="_blank">\${data.invite_link}</a></p>\` : ''}
+                   <p><strong>By:</strong> \${data.created_by}</p>\` :
+                  \`<h3 style="color: red;">❌ CLONE FAILED</h3>
+                   <p><strong>Error:</strong> \${data.error}</p>\`;
+            })
+            .catch(err => {
+              document.getElementById('result').innerHTML = 
+                \`<h3 style="color: red;">❌ ERROR</h3>
+                 <p>\${err.message}</p>\`;
+            });
+        }
+      </script>
+      
       <p><em>Educational tool by @pinkcorset</em></p>
     </body>
     </html>
   `);
 });
 
-app.get('/create-template', async (req, res) => {
-  const result = await createDiscordTemplate();
-  
-  if (result.success) {
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Template Created! - @pinkcorset</title>
-        <style>
-          body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-          .success { color: green; font-size: 24px; }
-          .template-url { font-size: 20px; background: #e8f5e9; padding: 15px; border-radius: 5px; margin: 20px 0; }
-          a { color: #5865f2; text-decoration: none; font-weight: bold; }
-        </style>
-      </head>
-      <body>
-        <h1 class="success">🎉 TEMPLATE CREATED!</h1>
-        <div class="template-url">
-          🔗 <a href="${result.template_url}" target="_blank">${result.template_url}</a>
-        </div>
-        <p><strong>🏰 Server:</strong> ${result.server_name}</p>
-        <p><strong>👤 Created by:</strong> ${result.created_by}</p>
-        <p><strong>🔑 Code:</strong> ${result.template_code}</p>
-        <hr>
-        <h3>📋 How to use:</h3>
-        <ol>
-          <li>Click the link above</li>
-          <li>Discord will open the template page</li>
-          <li>Click "Use Template" to create a new server</li>
-          <li>Customize and enjoy your cloned server!</li>
-        </ol>
-        <p><a href="/">← Back to home</a></p>
-        <p><em>Educational tool by @pinkcorset</em></p>
-      </body>
-      </html>
-    `);
-  } else {
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Error - @pinkcorset</title>
-        <style>
-          body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-          .error { color: red; font-size: 24px; }
-          .solution { background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; }
-        </style>
-      </head>
-      <body>
-        <h1 class="error">❌ TEMPLATE CREATION FAILED</h1>
-        <p><strong>Error:</strong> ${result.error}</p>
-        
-        <div class="solution">
-          <h3>💡 Possible solutions:</h3>
-          <ol>
-            <li><strong>You need "Manage Server" permission</strong> in the target server</li>
-            <li><strong>Or be the server owner</strong></li>
-            <li>Try with a different server that you own</li>
-            <li>Ask the server owner to give you "Manage Server" permission</li>
-          </ol>
-        </div>
-        
-        <p><a href="/">← Back to home</a></p>
-        <p><a href="/check-permissions">🔐 Check your permissions</a></p>
-        <p><em>Educational tool by @pinkcorset</em></p>
-      </body>
-      </html>
-    `);
-  }
+app.get('/clone', async (req, res) => {
+  const cloner = new DiscordServerCloner();
+  const result = await cloner.executeFullClone();
+  res.json(result);
 });
 
-app.get('/check-permissions', async (req, res) => {
-  try {
-    console.log('🔐 Checking permissions...');
-    
-    const userResponse = await axios.get(`${DISCORD_API}/users/@me`, { headers });
-    const guildsResponse = await axios.get(`${DISCORD_API}/users/@me/guilds`, { headers });
-    
-    const targetGuild = guildsResponse.data.find(g => g.id === TARGET_GUILD_ID);
-    
-    let permissions = {
-      can_create_templates: false,
-      reason: '',
-      guild_info: null
-    };
-    
-    if (targetGuild) {
-      const permsInt = parseInt(targetGuild.permissions);
-      const hasManageGuild = (permsInt & 0x20) !== 0;
-      const isOwner = targetGuild.owner;
-      
-      permissions = {
-        can_create_templates: hasManageGuild || isOwner,
-        reason: hasManageGuild ? 'Has MANAGE_GUILD permission' : 
-                isOwner ? 'Is server owner' : 'Missing MANAGE_GUILD permission',
-        guild_info: {
-          name: targetGuild.name,
-          id: targetGuild.id,
-          owner: isOwner,
-          permissions: permsInt,
-          permission_flags: {
-            manage_guild: hasManageGuild,
-            administrator: (permsInt & 0x8) !== 0
-          }
-        }
-      };
+app.get('/status', (req, res) => {
+  res.json({
+    service: 'Discord Server Cloner',
+    owner: `@${OWNER_USERNAME}`,
+    source_guild: TARGET_GUILD_ID,
+    status: 'ready',
+    endpoints: {
+      '/': 'Web interface',
+      '/clone': 'Start cloning (POST)'
     }
-    
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Permissions Check - @pinkcorset</title>
-        <style>
-          body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-          .success { color: green; }
-          .warning { color: orange; }
-          .info { background: #e3f2fd; padding: 15px; border-radius: 5px; margin: 10px 0; }
-        </style>
-      </head>
-      <body>
-        <h1>🔐 Permissions Check</h1>
-        <p><strong>👤 User:</strong> ${userResponse.data.username}#${userResponse.data.discriminator}</p>
-        
-        ${targetGuild ? `
-          <div class="info">
-            <h2>🏰 Server: "${targetGuild.name}"</h2>
-            <p><strong>ID:</strong> ${targetGuild.id}</p>
-            <p><strong>Owner:</strong> ${targetGuild.owner ? '✅ Yes' : '❌ No'}</p>
-            <p><strong>Manage Server Permission:</strong> ${permissions.guild_info.permission_flags.manage_guild ? '✅ Yes' : '❌ No'}</p>
-            <p><strong>Administrator:</strong> ${permissions.guild_info.permission_flags.administrator ? '✅ Yes' : '❌ No'}</p>
-          </div>
-          
-          ${permissions.can_create_templates ? `
-            <h2 class="success">✅ CAN CREATE TEMPLATES!</h2>
-            <p>You have the necessary permissions to create templates for this server.</p>
-            <p><a href="/create-template">🚀 Create Template Now</a></p>
-          ` : `
-            <h2 class="warning">❌ CANNOT CREATE TEMPLATES</h2>
-            <p>You need "Manage Server" permission or be the server owner.</p>
-            <p><strong>Reason:</strong> ${permissions.reason}</p>
-            <p>Ask the server owner for "Manage Server" permission.</p>
-          `}
-        ` : `
-          <h2 class="warning">❌ SERVER NOT FOUND</h2>
-          <p>You are not a member of server ID: ${TARGET_GUILD_ID}</p>
-          <p>Make sure:</p>
-          <ol>
-            <li>You are in the server</li>
-            <li>The server ID is correct</li>
-            <li>You're using the right account</li>
-          </ol>
-        `}
-        
-        <p><a href="/">← Back to home</a></p>
-        <p><em>Educational tool by @pinkcorset</em></p>
-      </body>
-      </html>
-    `);
-    
-  } catch (error) {
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head><title>Error - @pinkcorset</title></head>
-      <body>
-        <h1>❌ Error checking permissions</h1>
-        <p>${error.message}</p>
-        <p><a href="/">← Back to home</a></p>
-      </body>
-      </html>
-    `);
-  }
+  });
 });
 
-// Auto-create on deployment
+// Auto-start clone on deployment
 async function startServer() {
   const server = app.listen(PORT, () => {
     console.log('='.repeat(60));
-    console.log('🚀 Discord Template Creator');
+    console.log('🚀 Discord Server Cloner');
     console.log('='.repeat(60));
-    console.log(`🌐 Server running on port: ${PORT}`);
-    console.log(`👤 Using account for: @${OWNER_USERNAME}`);
-    console.log(`🎯 Target Server ID: ${TARGET_GUILD_ID || 'NOT SET'}`);
-    console.log('='.repeat(60));
-    console.log('💡 Visit your Render URL to create template');
+    console.log(`🌐 Port: ${PORT}`);
+    console.log(`👤 By: @${OWNER_USERNAME}`);
+    console.log(`🎯 Source: ${TARGET_GUILD_ID}`);
     console.log('='.repeat(60));
   });
   
-  // Auto-create template on deployment
+  // Auto-clone on deployment (opzionale)
   if (USER_TOKEN && TARGET_GUILD_ID) {
-    console.log('\n🔄 Auto-creating template on deployment...\n');
+    console.log('\n🔄 Auto-cloning on deployment...\n');
     
     setTimeout(async () => {
-      try {
-        const result = await createDiscordTemplate();
-        
-        if (result.success) {
-          console.log('\n' + '='.repeat(70));
-          console.log('🎯 DEPLOYMENT SUCCESSFUL!');
-          console.log('='.repeat(70));
-          console.log(`🔗 YOUR TEMPLATE LINK: ${result.template_url}`);
-          console.log(`👤 Created by: @${OWNER_USERNAME}`);
-          console.log('='.repeat(70));
-          console.log('💡 Visit your Render URL to view the template link');
-          console.log('='.repeat(70));
-        }
-      } catch (error) {
-        console.log('Auto-creation failed:', error.message);
+      const cloner = new DiscordServerCloner();
+      const result = await cloner.executeFullClone();
+      
+      console.log('\n' + '='.repeat(70));
+      console.log('🎯 CLONE RESULT:');
+      console.log('='.repeat(70));
+      console.log(JSON.stringify(result, null, 2));
+      
+      if (result.success && result.invite_link) {
+        console.log('='.repeat(70));
+        console.log(`🔗 YOUR NEW SERVER INVITE: ${result.invite_link}`);
+        console.log('👤 Created by: @pinkcorset');
+        console.log('='.repeat(70));
       }
     }, 3000);
   }
@@ -389,5 +483,4 @@ async function startServer() {
   return server;
 }
 
-// Start the server
 startServer().catch(console.error);
